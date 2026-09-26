@@ -1,8 +1,7 @@
-import os
 import json
-import re
-import streamlit as st
+import os
 
+import streamlit as st
 from dotenv import load_dotenv
 from google import genai
 
@@ -10,633 +9,469 @@ from database import (
     create_table,
     save_chat,
     get_chat_history,
-    clear_chat_history
+    clear_chat_history,
 )
 
 
-# ==========================================
+# --------------------------------------------------
 # 1. PAGE CONFIGURATION
-# ==========================================
+# --------------------------------------------------
 
 st.set_page_config(
     page_title="StudyMate AI",
     page_icon="📚",
-    layout="centered"
+    layout="wide",
 )
 
 
-# ==========================================
-# 2. DATABASE INITIALIZATION
-# ==========================================
+# --------------------------------------------------
+# 2. GOOGLE LOGIN
+# --------------------------------------------------
+
+if not st.user.is_logged_in:
+    st.title("📚 StudyMate AI")
+    st.write("Your personal AI-powered study assistant.")
+
+    st.info("Sign in with Google to continue.")
+
+    if st.button("🔐 Login with Google", type="primary"):
+        st.login()
+
+    st.stop()
+
+
+# Get the logged-in user's unique Google ID
+user_id = st.user["sub"]
+user_name = st.user.get("name", "Student")
+
+
+# --------------------------------------------------
+# 3. DATABASE SETUP
+# --------------------------------------------------
 
 create_table()
 
 
-# ==========================================
-# 3. LOAD API KEY
-# ==========================================
+# --------------------------------------------------
+# 4. GEMINI API SETUP
+# --------------------------------------------------
 
 load_dotenv()
 
-api_key = os.getenv("GEMINI_API_KEY")
+api_key = st.secrets.get(
+    "GEMINI_API_KEY",
+    os.getenv("GEMINI_API_KEY"),
+)
 
 if not api_key:
-    st.error(
-        "Gemini API key not found. "
-        "Please check your .env file."
-    )
+    st.error("Gemini API key is missing. Check your app Secrets.")
     st.stop()
 
 
-# ==========================================
-# 4. INITIALIZE GEMINI
-# ==========================================
-
 MODEL_NAME = "gemini-3.5-flash-lite"
 
-# Keep the Gemini client alive during the session
-if (
-    "client" not in st.session_state
-    or "chat" not in st.session_state
-):
+# Keep the client and chat in the user's Streamlit session
+if "client" not in st.session_state:
     st.session_state.client = genai.Client(
         api_key=api_key
     )
 
-    st.session_state.chat = (
-        st.session_state.client.chats.create(
-            model=MODEL_NAME
-        )
-    )
-
-# Reuse the same client throughout the app
-client = st.session_state.client
-
-
-# ==========================================
-# 5. INITIALIZE SESSION STATE
-# ==========================================
-
 if "chat" not in st.session_state:
-    st.session_state.chat = client.chats.create(
+    st.session_state.chat = st.session_state.client.chats.create(
         model=MODEL_NAME
     )
 
-if "messages" not in st.session_state:
-    st.session_state.messages = []
-
-if "quiz" not in st.session_state:
-    st.session_state.quiz = None
-
-if "quiz_submitted" not in st.session_state:
-    st.session_state.quiz_submitted = {}
+client = st.session_state.client
+chat = st.session_state.chat
 
 
-# ==========================================
+# --------------------------------------------------
+# 5. HELPER FUNCTION
+# --------------------------------------------------
+
+def ask_gemini(prompt):
+    """Send a prompt to Gemini and return its response."""
+
+    response = chat.send_message(prompt)
+    return response.text
+
+
+def save_result(question, answer):
+    """Save a conversation for the currently logged-in user."""
+
+    save_chat(user_id, question, answer)
+
+
+# --------------------------------------------------
 # 6. SIDEBAR
-# ==========================================
+# --------------------------------------------------
 
 st.sidebar.title("📚 StudyMate AI")
+st.sidebar.write(f"Welcome, {user_name}!")
 
-feature = st.sidebar.radio(
-    "Choose a feature:",
+page = st.sidebar.radio(
+    "Choose a feature",
     [
-        "Chat with AI",
-        "Explain a Topic",
-        "Summarize Text",
-        "Generate Quiz",
-        "Chat History"
-    ]
+        "💬 Chat with AI",
+        "📖 Explain a Topic",
+        "📝 Summarize Text",
+        "🧠 Generate Quiz",
+        "🕘 Chat History",
+    ],
 )
 
+st.sidebar.divider()
 
-# ==========================================
-# FEATURE 1: CHAT WITH AI
-# ==========================================
+if st.sidebar.button("🚪 Logout", use_container_width=True):
+    st.logout()
 
-if feature == "Chat with AI":
 
-    st.title("💬 Chat with StudyMate")
-    st.caption("Ask questions and learn something new!")
+# --------------------------------------------------
+# 7. CHAT WITH AI
+# --------------------------------------------------
 
-    # Display current conversation
+if page == "💬 Chat with AI":
+
+    st.title("💬 Chat with AI")
+    st.caption("Ask questions and learn something new.")
+
+    if "messages" not in st.session_state:
+        st.session_state.messages = []
+
+    # Display current session's conversation
     for message in st.session_state.messages:
-
         with st.chat_message(message["role"]):
             st.markdown(message["content"])
 
-    question = st.chat_input(
-        "Ask your study question..."
-    )
+    prompt = st.chat_input("Ask me anything...")
 
-    if question:
-
-        # Save and display user message
-        st.session_state.messages.append({
-            "role": "user",
-            "content": question
-        })
+    if prompt:
+        st.session_state.messages.append(
+            {"role": "user", "content": prompt}
+        )
 
         with st.chat_message("user"):
-            st.markdown(question)
+            st.markdown(prompt)
 
-        prompt = f"""
-        You are StudyMate AI, a helpful study assistant.
+        try:
+            with st.chat_message("assistant"):
+                with st.spinner("Thinking..."):
+                    answer = ask_gemini(prompt)
 
-        Explain concepts in simple language.
-        Use examples wherever possible.
-        Keep answers beginner-friendly.
+                st.markdown(answer)
 
-        Student's question: {question}
-        """
+            st.session_state.messages.append(
+                {"role": "assistant", "content": answer}
+            )
 
-        with st.chat_message("assistant"):
+            save_result(prompt, answer)
 
-            with st.spinner("Thinking..."):
-
-                try:
-
-                    response = (
-                        st.session_state.chat.send_message(
-                            prompt
-                        )
-                    )
-
-                    answer = response.text
-
-                    st.markdown(answer)
-
-                    # Save question and answer permanently
-                    save_chat(question, answer)
-
-                    # Save answer in current session
-                    st.session_state.messages.append({
-                        "role": "assistant",
-                        "content": answer
-                    })
-
-                except Exception as e:
-                    st.error(
-                        f"Something went wrong: {e}"
-                    )
+        except Exception as e:
+            st.error(f"Something went wrong: {e}")
 
 
-# ==========================================
-# FEATURE 2: EXPLAIN A TOPIC
-# ==========================================
+# --------------------------------------------------
+# 8. EXPLAIN A TOPIC
+# --------------------------------------------------
 
-elif feature == "Explain a Topic":
+elif page == "📖 Explain a Topic":
 
     st.title("📖 Explain a Topic")
+    st.write("Learn difficult concepts in simple language.")
 
     topic = st.text_input(
-        "Enter the topic you want explained"
+        "Enter a topic",
+        placeholder="Example: Machine Learning",
     )
 
-    if st.button("Explain"):
+    level = st.selectbox(
+        "Explanation level",
+        ["Beginner", "Intermediate", "Advanced"],
+    )
 
-        if topic.strip():
+    if st.button("Explain Topic", type="primary"):
 
-            prompt = f"""
-            Explain the topic '{topic}' to a beginner.
-
-            Follow this structure:
-
-            1. Simple definition
-            2. How it works
-            3. Real-world example
-            4. Key points to remember
-
-            Use simple language.
-            """
-
-            with st.spinner("Preparing explanation..."):
-
-                try:
-
-                    response = client.models.generate_content(
-                        model=MODEL_NAME,
-                        contents=prompt
-                    )
-
-                    st.markdown(response.text)
-
-                except Exception as e:
-                    st.error(
-                        f"Something went wrong: {e}"
-                    )
-
-        else:
+        if not topic.strip():
             st.warning("Please enter a topic.")
 
-
-# ==========================================
-# FEATURE 3: SUMMARIZE TEXT
-# ==========================================
-
-elif feature == "Summarize Text":
-
-    st.title("📝 Summarize Your Notes")
-
-    text = st.text_area(
-        "Paste your study material here",
-        height=250
-    )
-
-    if st.button("Summarize"):
-
-        if text.strip():
-
+        else:
             prompt = f"""
-            Summarize the following text into
-            beginner-friendly study notes.
+            Explain the following topic: {topic}
 
-            Include:
+            Explanation level: {level}
 
-            1. Main idea
-            2. Important points
-            3. Key terms
-            4. Short conclusion
-
-            Keep the summary clear and concise.
-
-            Text:
-            {text}
+            Use simple language, clear headings,
+            examples, and important points.
             """
 
-            with st.spinner("Summarizing your notes..."):
+            try:
+                with st.spinner("Preparing explanation..."):
+                    answer = ask_gemini(prompt)
 
-                try:
+                st.subheader(f"Explanation: {topic}")
+                st.markdown(answer)
 
-                    response = client.models.generate_content(
-                        model=MODEL_NAME,
-                        contents=prompt
-                    )
+                save_result(
+                    f"Explain topic: {topic} ({level})",
+                    answer,
+                )
 
-                    st.markdown(response.text)
+            except Exception as e:
+                st.error(f"Something went wrong: {e}")
 
-                except Exception as e:
-                    st.error(
-                        f"Something went wrong: {e}"
-                    )
+
+# --------------------------------------------------
+# 9. SUMMARIZE TEXT
+# --------------------------------------------------
+
+elif page == "📝 Summarize Text":
+
+    st.title("📝 Summarize Text")
+    st.write("Turn long text into concise notes.")
+
+    text_input = st.text_area(
+        "Paste your text here",
+        height=250,
+        placeholder="Paste your notes or study material...",
+    )
+
+    summary_length = st.selectbox(
+        "Summary length",
+        ["Short", "Medium", "Detailed"],
+    )
+
+    if st.button("Summarize", type="primary"):
+
+        if not text_input.strip():
+            st.warning("Please enter some text.")
 
         else:
-            st.warning("Please paste some text.")
+            prompt = f"""
+            Summarize the following text.
+
+            Summary length: {summary_length}
+
+            Preserve the important information.
+            Use clear headings and bullet points where useful.
+
+            TEXT:
+            {text_input}
+            """
+
+            try:
+                with st.spinner("Summarizing..."):
+                    answer = ask_gemini(prompt)
+
+                st.subheader("Summary")
+                st.markdown(answer)
+
+                save_result(
+                    f"Summarize text ({summary_length})",
+                    answer,
+                )
+
+            except Exception as e:
+                st.error(f"Something went wrong: {e}")
 
 
-# ==========================================
-# FEATURE 4: GENERATE QUIZ
-# ==========================================
+# --------------------------------------------------
+# 10. GENERATE QUIZ
+# --------------------------------------------------
 
-elif feature == "Generate Quiz":
+elif page == "🧠 Generate Quiz":
 
-    st.title("🧠 Generate a Quiz")
+    st.title("🧠 Generate Quiz")
+    st.write("Test your understanding of a topic.")
 
-    st.write(
-        "Choose a topic and test your knowledge!"
+    quiz_topic = st.text_input(
+        "Enter a topic for the quiz",
+        placeholder="Example: Python, DBMS, Machine Learning",
     )
 
-    topic = st.text_input(
-        "Enter a quiz topic",
-        key="quiz_topic"
-    )
-
-    num_questions = st.number_input(
+    num_questions = st.slider(
         "Number of questions",
-        min_value=1,
-        max_value=20,
+        min_value=3,
+        max_value=10,
         value=5,
-        step=1
     )
 
-    # Generate quiz
-    if st.button("Generate Quiz"):
+    if st.button("Generate Quiz", type="primary"):
 
-        if topic.strip():
-
-            prompt = f"""
-            Create exactly {int(num_questions)}
-            multiple-choice questions about:
-
-            Topic: {topic}
-
-            The questions should be beginner-friendly.
-
-            Return ONLY a valid JSON array.
-            Do not include markdown or code fences.
-
-            Format:
-
-            [
-                {{
-                    "question": "Question text?",
-                    "options": [
-                        "First option",
-                        "Second option",
-                        "Third option",
-                        "Fourth option"
-                    ],
-                    "answer": 0,
-                    "explanation": "Explain the correct answer."
-                }}
-            ]
-
-            Rules:
-            - Each question must have four options.
-            - The answer must be an integer from 0 to 3.
-            - The answer represents the correct option's index.
-            - Include a short explanation.
-            """
-
-            with st.spinner("Generating your quiz..."):
-
-                try:
-
-                    response = client.models.generate_content(
-                        model=MODEL_NAME,
-                        contents=prompt
-                    )
-
-                    result = response.text.strip()
-
-                    # Remove code fences if Gemini adds them
-                    result = re.sub(
-                        r"^```(?:json)?\s*",
-                        "",
-                        result,
-                        flags=re.IGNORECASE
-                    )
-
-                    result = re.sub(
-                        r"\s*```$",
-                        "",
-                        result
-                    )
-
-                    quiz = json.loads(result)
-
-                    # Validate quiz
-                    if not isinstance(quiz, list) or not quiz:
-                        raise ValueError(
-                            "Invalid quiz format."
-                        )
-
-                    for q in quiz:
-
-                        if not all(
-                            key in q
-                            for key in [
-                                "question",
-                                "options",
-                                "answer",
-                                "explanation"
-                            ]
-                        ):
-                            raise ValueError(
-                                "A question is missing information."
-                            )
-
-                        if (
-                            not isinstance(q["options"], list)
-                            or len(q["options"]) != 4
-                        ):
-                            raise ValueError(
-                                "Each question must have four options."
-                            )
-
-                        if (
-                            not isinstance(q["answer"], int)
-                            or isinstance(q["answer"], bool)
-                            or q["answer"] not in range(4)
-                        ):
-                            raise ValueError(
-                                "Invalid correct-answer index."
-                            )
-
-                    # Store quiz in session state
-                    st.session_state.quiz = quiz
-                    st.session_state.quiz_submitted = {}
-
-                    # Clear old selections
-                    for i in range(20):
-                        st.session_state.pop(
-                            f"question_{i}",
-                            None
-                        )
-
-                    st.rerun()
-
-                except Exception as e:
-                    st.error(
-                        f"Could not generate quiz: {e}"
-                    )
+        if not quiz_topic.strip():
+            st.warning("Please enter a topic.")
 
         else:
-            st.warning("Please enter a quiz topic.")
+            prompt = f"""
+            Create exactly {num_questions} multiple-choice
+            questions about: {quiz_topic}
 
-    # Display quiz
-    if st.session_state.quiz:
+            Return ONLY valid JSON in this format:
+            {{
+                "questions": [
+                    {{
+                        "question": "Question text",
+                        "options": [
+                            "Option A",
+                            "Option B",
+                            "Option C",
+                            "Option D"
+                        ],
+                        "answer": "Option A",
+                        "explanation": "Why this answer is correct"
+                    }}
+                ]
+            }}
 
-        st.divider()
-        st.subheader("Your Quiz")
+            The answer must exactly match one of the options.
+            Do not include Markdown code fences.
+            """
 
-        for i, q in enumerate(st.session_state.quiz):
+            try:
+                with st.spinner("Creating your quiz..."):
+                    response = ask_gemini(prompt)
 
-            st.markdown(
-                f"### Question {i + 1}"
-            )
+                # Extract JSON if the model adds code fences
+                cleaned_response = response.strip()
 
-            st.write(q["question"])
+                if cleaned_response.startswith("```"):
+                    cleaned_response = cleaned_response.replace(
+                        "```json", "", 1
+                    ).replace("```", "").strip()
 
-            selected = st.radio(
-                "Select your answer:",
-                q["options"],
-                index=None,
-                key=f"question_{i}",
-                disabled=(
-                    i in st.session_state.quiz_submitted
-                )
-            )
+                quiz_data = json.loads(cleaned_response)
 
-            # Submit answer
-            if i not in st.session_state.quiz_submitted:
+                questions = quiz_data.get("questions", [])
 
-                if st.button(
-                    "Submit Answer",
-                    key=f"submit_{i}"
-                ):
-
-                    if selected is None:
-
-                        st.warning(
-                            "Please select an option first."
-                        )
-
-                    else:
-
-                        selected_index = (
-                            q["options"].index(selected)
-                        )
-
-                        st.session_state.quiz_submitted[i] = (
-                            selected_index
-                        )
-
-                        st.rerun()
-
-            # Reveal answer only after submission
-            if i in st.session_state.quiz_submitted:
-
-                selected_index = (
-                    st.session_state.quiz_submitted[i]
-                )
-
-                if selected_index == q["answer"]:
-                    st.success("✅ Correct answer!")
+                if not questions:
+                    st.error("No questions were generated.")
 
                 else:
-                    st.error("❌ Incorrect answer.")
+                    st.session_state.quiz_data = questions
+                    st.session_state.quiz_topic = quiz_topic
+                    st.session_state.quiz_submitted = False
+                    st.session_state.quiz_answers = {}
 
-                st.write(
-                    "**Correct answer:**",
-                    q["options"][q["answer"]]
-                )
-
-                st.info(
-                    f"**Explanation:** {q['explanation']}"
-                )
-
-            st.divider()
-
-        # Display score after all answers are submitted
-        if len(st.session_state.quiz_submitted) == len(
-            st.session_state.quiz
-        ):
-
-            score = sum(
-                1
-                for i, q in enumerate(st.session_state.quiz)
-                if (
-                    st.session_state.quiz_submitted[i]
-                    == q["answer"]
-                )
-            )
-
-            total = len(st.session_state.quiz)
-
-            st.subheader("🎉 Quiz Completed!")
-
-            st.metric(
-                "Your Score",
-                f"{score} / {total}"
-            )
-
-            st.progress(score / total)
-
-            if st.button("Try Another Quiz"):
-
-                st.session_state.quiz = None
-                st.session_state.quiz_submitted = {}
-
-                for i in range(20):
-                    st.session_state.pop(
-                        f"question_{i}",
-                        None
+                    save_result(
+                        f"Generate quiz: {quiz_topic}",
+                        f"Generated {len(questions)} quiz questions.",
                     )
 
+            except Exception as e:
+                st.error(
+                    "Could not generate the quiz. "
+                    "Please try again."
+                )
+                st.caption(str(e))
+
+    # Display the generated quiz
+    if "quiz_data" in st.session_state:
+
+        questions = st.session_state.quiz_data
+
+        st.subheader(
+            f"Quiz: {st.session_state.quiz_topic}"
+        )
+
+        with st.form("quiz_form"):
+
+            selected_answers = {}
+
+            for i, question in enumerate(questions):
+
+                st.markdown(
+                    f"**Q{i + 1}. {question['question']}**"
+                )
+
+                selected_answers[i] = st.radio(
+                    "Choose your answer:",
+                    question["options"],
+                    key=f"quiz_question_{i}",
+                    index=None,
+                )
+
+                st.divider()
+
+            submitted = st.form_submit_button(
+                "Submit Quiz",
+                type="primary",
+            )
+
+        if submitted:
+
+            st.session_state.quiz_answers = selected_answers
+            st.session_state.quiz_submitted = True
+
+        if st.session_state.get("quiz_submitted", False):
+
+            score = 0
+
+            for i, question in enumerate(questions):
+
+                chosen = st.session_state.quiz_answers.get(i)
+                correct = question["answer"]
+
+                if chosen == correct:
+                    score += 1
+                    st.success(f"Q{i + 1}: Correct!")
+
+                else:
+                    st.error(
+                        f"Q{i + 1}: Incorrect. "
+                        f"Correct answer: {correct}"
+                    )
+
+                st.write(
+                    f"**Explanation:** {question['explanation']}"
+                )
+
+            st.subheader(
+                f"Your score: {score} / {len(questions)}"
+            )
+
+            if st.button("Try Another Quiz"):
+                del st.session_state.quiz_data
+                st.session_state.pop("quiz_answers", None)
+                st.session_state.pop("quiz_submitted", None)
                 st.rerun()
 
 
-# ==========================================
-# FEATURE 5: CHAT HISTORY
-# ==========================================
+# --------------------------------------------------
+# 11. CHAT HISTORY
+# --------------------------------------------------
 
-elif feature == "Chat History":
+elif page == "🕘 Chat History":
 
-    st.title("🕘 Chat History")
+    st.title("🕘 Your Chat History")
 
     st.write(
-        "Here you can revisit your previous conversations."
+        "Only conversations associated with your "
+        "Google account are shown here."
     )
 
-    try:
+    history = get_chat_history(user_id)
 
-        history = get_chat_history()
+    if not history:
+        st.info("You don't have any saved conversations yet.")
 
-        if history:
+    else:
+        st.write(f"Total saved conversations: {len(history)}")
 
-            st.caption(
-                f"You have {len(history)} saved conversations."
-            )
+        if st.button("🗑️ Clear My Chat History"):
 
-            # Display newest conversations first
-            for item in history:
+            clear_chat_history(user_id)
 
-                chat_id, user_message, ai_response, created_at = item
+            st.success("Your chat history has been cleared.")
+            st.rerun()
 
-                with st.expander(
-                    f"💬 {user_message[:70]} "
-                    f"— {created_at}"
-                ):
+        for row in history:
 
-                    st.markdown("**Your question:**")
-                    st.write(user_message)
+            chat_id, question, answer, created_at = row
 
-                    st.markdown("**StudyMate AI:**")
-                    st.markdown(ai_response)
-
-            st.divider()
-
-            if st.button(
-                "🗑️ Clear Chat History",
-                type="secondary"
+            with st.expander(
+                f"💬 {question[:80]} | {created_at}"
             ):
+                st.markdown("**You asked:**")
+                st.write(question)
 
-                st.session_state.confirm_clear = True
-
-            if st.session_state.get(
-                "confirm_clear",
-                False
-            ):
-
-                st.warning(
-                    "Are you sure you want to delete "
-                    "all saved chat history?"
-                )
-
-                col1, col2 = st.columns(2)
-
-                with col1:
-
-                    if st.button("Yes, delete"):
-
-                        clear_chat_history()
-
-                        st.session_state.confirm_clear = False
-
-                        st.success(
-                            "Chat history deleted."
-                        )
-
-                        st.rerun()
-
-                with col2:
-
-                    if st.button("Cancel"):
-
-                        st.session_state.confirm_clear = False
-
-                        st.rerun()
-
-        else:
-
-            st.info(
-                "No chat history yet. "
-                "Start chatting with StudyMate AI!"
-            )
-
-    except Exception as e:
-
-        st.error(
-            f"Could not load chat history: {e}"
-        )
+                st.markdown("**StudyMate AI:**")
+                st.markdown(answer)
